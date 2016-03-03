@@ -41,7 +41,9 @@ trait Curator {
 
   def client: CuratorFramework
 
-  def create[T](znode: String, mode: CreateMode = EPHEMERAL)
+  def create(znode: String, mode: CreateMode = EPHEMERAL)
+
+  def persist(znode: String) = create(znode, PERSISTENT)
 
   def set(znode: String, value: Array[Byte])
 
@@ -79,7 +81,7 @@ class DefaultCurator(framework: CuratorFramework) extends Curator {
 
   override def client: CuratorFramework = framework
 
-  override def create[T](znode: String, mode: CreateMode = EPHEMERAL): Unit = 
+  override def create(znode: String, mode: CreateMode = EPHEMERAL): Unit = 
     znode match {
       case null | "" => error("Invalid znode!")
       case p if !p.startsWith("/") => error("Invalid znode: "+p)

@@ -15,7 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package hash.util
+package hash
 
 import org.apache.curator.test.TestingServer
 import org.scalatest.BeforeAndAfter
@@ -23,24 +23,29 @@ import org.scalatest.FlatSpec
 import org.scalatest.Matchers
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
+import hash.util.ZooKeeper
 
-class CuratorSpec extends FlatSpec with Matchers with BeforeAndAfter {
+class ConsistentHashingSpec extends FlatSpec with Matchers with BeforeAndAfter {
 
-  val log = LoggerFactory.getLogger(classOf[CuratorSpec])
+  val log = LoggerFactory.getLogger(classOf[ConsistentHashingSpec])
+
   var zookeeper: Option[TestingServer] = None
 
   before { zookeeper match {
     case Some(zk) =>
-    case None => zookeeper = Option(new TestingServer(2181))
+    case None => zookeeper = Option(new TestingServer())
   }}
 
-  "curator" should "create stats" in {
-    val curator = Curator.create(Seq(ZooKeeper()))
-    curator.create("/ring/hash1")
-    curator.create("/ring/hash2")
-    val exists1 = curator.exists("/ring/hash1")
-    val exists2 = curator.exists("/ring/hash2")
-    assert(exists1 && exists2)
+  "consistent hashing" should "post nodes to zookeeper" in {
+    val p = zookeeper.map { zk => zk.getPort }.getOrElse(2181)
+    val hashing = ConsistentHashing.create(ZooKeeper(port = p))
+    val map = hashing.post (
+      Node(port = 1000, replicas = 2), 
+      Node(port = 2000, replicas = 2),
+      Node(port = 3000, replicas = 2)
+    ).list
+    log.info("map in zookeeper "+map)
+    assert(6 == map.size)
   }
 
   after { zookeeper match {

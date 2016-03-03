@@ -63,12 +63,12 @@ object Node {
 final case class Node(host: String = "localhost", port: Int = 1234, 
                       replicas: Int = 100) {
 
-  def toMap(): Map[Long, Node] = (for(idx <- 1 to replicas) yield {
+  def toMap(): Map[String, Node] = (for(idx <- 1 to replicas) yield {
     (Hashing.sipHash24.hashObject(this, new Funnel[Node]() {
       override def funnel(from: Node, into: PrimitiveSink) =  
         into.putUnencodedChars(from.host).putInt(from.port).putInt(idx)
-    }).toString.toLong -> this)
-  }).toMap[Long, Node]
+    }).toString -> this)
+  }).toMap[String, Node]
 
 }
 
@@ -76,7 +76,7 @@ trait ConsistentHashing {
 
   def post(node: Node*): ConsistentHashing
 
-  def list: Map[Long, Node]
+  def list: Map[String, Node]
 
   def findBy(key: String): Option[Node]
 
@@ -100,7 +100,7 @@ protected[hash] class DefaultConsistentHashing(curator: Curator)
 
   val log = LoggerFactory.getLogger(classOf[DefaultConsistentHashing])
 
-  protected[hash] var ring = SortedMap.empty[Long, Node]
+  protected[hash] var ring = SortedMap.empty[String, Node]
 
   protected[hash] val defaultWatcher = new DefaultWatcher(this)
 
@@ -110,16 +110,16 @@ protected[hash] class DefaultConsistentHashing(curator: Curator)
     override def process(event: WatchedEvent): Unit = event.getType match {
       case NodeCreated => {
         val hash = event.getPath
-        //log.info("znode found: "+hash)
+        log.debug("Znode found: "+hash)
         val bytes = main.client.get(hash).getOrElse(Node.toBytes(Node()))
-        ring += (hash.toLong -> Node.from(bytes))
+        ring += (hash -> Node.from(bytes))
         main.client.list(root, main.defaultWatcher)  
       }
       case ChildWatchRemoved =>
       case DataWatchRemoved => 
       case NodeChildrenChanged => 
       case NodeDataChanged => 
-      case NodeDeleted =>
+      case NodeDeleted =>// TODO: remove znode (hash) from ring
       case None =>
     }
   }
@@ -128,7 +128,10 @@ protected[hash] class DefaultConsistentHashing(curator: Curator)
 
   override def client: Curator = curator
 
-  protected[hash] def initialize() = curator.list(root, defaultWatcher)
+  protected[hash] def initialize() = {
+    retry(3, root, { p => curator.persist(p) })
+    curator.list(root, defaultWatcher)
+  }
 
   protected[hash] def retry(times: Int, path: String, f: String => Unit) {
     if(0 < times) {
@@ -138,27 +141,30 @@ protected[hash] class DefaultConsistentHashing(curator: Curator)
         case n: NodeExistsException => log.warn("Path "+path+" already exists!")
         case e : Exception => log.error("Unable to create znode: "+path, e)
       }
-    }
+    } 
   }
 
   override def post(nodes: Node*): ConsistentHashing = {
     ring ++= nodes.map { node => node.toMap }.flatten.toMap
-    retry(5, root, { p => curator.create(root) })
+    retry(nodes.size, root, { p => curator.persist(root) })
     ring.foreach { case (hash, node) => 
       val znode = root+"/"+hash 
-      if(!curator.exists(znode)) curator.set(znode, Node.toBytes(node)) 
+      if(!curator.exists(znode)) { 
+        curator.create(znode)
+        curator.set(znode, Node.toBytes(node)) 
+      }
     }
     this
   } 
 
-  def list: Map[Long, Node] = curator.list(root).map { case (hash, bytes) => 
-    (hash.toLong, Node.from(bytes)) 
+  def list: Map[String, Node] = curator.list(root).map { case (hash, bytes) => 
+    (hash, Node.from(bytes)) 
   }.toMap
 
   def findBy(key: String): Option[Node] = TreeMap(list.toArray:_*).
     from(hash(key)).headOption.orElse(ring.headOption).map(_._2)
 
-  protected def hash(input: String): Long = 
-    Hashing.sipHash24.hashString(input, Charset.forName("UTF-8")).toString.toLong
+  protected def hash(input: String): String = 
+    Hashing.sipHash24.hashString(input, Charset.forName("UTF-8")).toString
 
 }
