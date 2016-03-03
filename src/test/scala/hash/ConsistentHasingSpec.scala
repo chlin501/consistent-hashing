@@ -18,20 +18,22 @@
 package hash
 
 import org.apache.curator.test.TestingServer
-import org.scalatest.BeforeAndAfter
+import org.scalatest.BeforeAndAfterAll
 import org.scalatest.FlatSpec
 import org.scalatest.Matchers
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import hash.util.ZooKeeper
 
-class ConsistentHashingSpec extends FlatSpec with Matchers with BeforeAndAfter {
+class ConsistentHashingSpec extends FlatSpec 
+                               with Matchers 
+                               with BeforeAndAfterAll {
 
   val log = LoggerFactory.getLogger(classOf[ConsistentHashingSpec])
 
   var zookeeper: Option[TestingServer] = None
 
-  before { zookeeper match {
+  override def beforeAll { zookeeper match {
     case Some(zk) =>
     case None => zookeeper = Option(new TestingServer())
   }}
@@ -48,7 +50,22 @@ class ConsistentHashingSpec extends FlatSpec with Matchers with BeforeAndAfter {
     assert(6 == map.size)
   }
 
-  after { zookeeper match {
+  "consistent hashing" should "detect node created" in {
+    val p = zookeeper.map { zk => zk.getPort }.getOrElse(2181)
+    val hashing1 = ConsistentHashing.create("/ring1", ZooKeeper(port = p))
+    val hashing2 = ConsistentHashing.create("/ring1", ZooKeeper(port = p))
+    val map1 = hashing1.post(Node(port = 1000, replicas = 2)).list
+    log.info("initialize post (hashing1): "+map1)
+    assert(2 == map1.size)
+    val map2 = hashing2.post(Node(port = 2000, replicas = 2)).list
+    log.info("second post (hashing2): "+map2)
+    assert(4 == map2.size)
+    val altered = hashing1.list
+    log.info("hashing1 map (altered): "+altered)
+    assert(4 == altered.size)
+  }
+
+  override def afterAll { zookeeper match {
     case Some(zk) => zk.close
     case None => 
   }}

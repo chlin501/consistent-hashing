@@ -80,58 +80,31 @@ trait ConsistentHashing {
 
   def findBy(key: String): Option[Node]
 
-  def client: Curator
-
 }
 
 object ConsistentHashing {
   
   val root = "/ring" // TODO: from conf
+
+  def create(rootPath: String, zookeepers: ZooKeeper*): ConsistentHashing = 
+    new DefaultConsistentHashing(rootPath, Curator.create(zookeepers.toSeq))
   
   def create(zookeepers: ZooKeeper*): ConsistentHashing = 
-    new DefaultConsistentHashing(Curator.create(zookeepers.toSeq))
+    create(root, zookeepers:_*) 
 
 }
 
-protected[hash] class DefaultConsistentHashing(curator: Curator) 
+protected[hash] class DefaultConsistentHashing(rootPath: String, 
+                                               curator: Curator) 
       extends ConsistentHashing {
  
   import ConsistentHashing._
 
   val log = LoggerFactory.getLogger(classOf[DefaultConsistentHashing])
 
-  protected[hash] var ring = SortedMap.empty[String, Node]
-
-  protected[hash] val defaultWatcher = new DefaultWatcher(this)
-
-  protected[hash] class DefaultWatcher(main: DefaultConsistentHashing) 
-      extends Watcher {
-
-    override def process(event: WatchedEvent): Unit = event.getType match {
-      case NodeCreated => {
-        val hash = event.getPath
-        log.debug("Znode found: "+hash)
-        val bytes = main.client.get(hash).getOrElse(Node.toBytes(Node()))
-        ring += (hash -> Node.from(bytes))
-        main.client.list(root, main.defaultWatcher)  
-      }
-      case ChildWatchRemoved =>
-      case DataWatchRemoved => 
-      case NodeChildrenChanged => 
-      case NodeDataChanged => 
-      case NodeDeleted =>// TODO: remove znode (hash) from ring
-      case None =>
-    }
-  }
-
-  initialize()
-
-  override def client: Curator = curator
-
-  protected[hash] def initialize() = {
-    retry(3, root, { p => curator.persist(p) })
-    curator.list(root, defaultWatcher)
-  }
+  // TODO: ring may be outdated because not every operation keeps the latest
+  //       vesion.
+  protected[hash] var ring = SortedMap.empty[String, Node] 
 
   protected[hash] def retry(times: Int, path: String, f: String => Unit) {
     if(0 < times) {
@@ -145,24 +118,30 @@ protected[hash] class DefaultConsistentHashing(curator: Curator)
   }
 
   override def post(nodes: Node*): ConsistentHashing = {
-    ring ++= nodes.map { node => node.toMap }.flatten.toMap
-    retry(nodes.size, root, { p => curator.persist(root) })
-    ring.foreach { case (hash, node) => 
-      val znode = root+"/"+hash 
-      if(!curator.exists(znode)) { 
-        curator.create(znode)
-        curator.set(znode, Node.toBytes(node)) 
+    retry(nodes.size, rootPath, { p => curator.persist(rootPath) })
+    nodes.map { node => node.toMap }.flatten.toMap.foreach { 
+      case (hash, node) => {
+        val znode = rootPath+"/"+hash 
+        if(!curator.exists(znode)) { 
+          curator.create(znode)
+          curator.set(znode, Node.toBytes(node)) 
+        }
       }
     }
     this
   } 
 
-  def list: Map[String, Node] = curator.list(root).map { case (hash, bytes) => 
-    (hash, Node.from(bytes)) 
-  }.toMap
+  override def list: Map[String, Node] = {
+    ring = TreeMap(curator.list(rootPath).map { case (hash, bytes) => 
+      (hash, Node.from(bytes)) 
+    }.toArray:_*)
+    ring
+  }
 
-  def findBy(key: String): Option[Node] = TreeMap(list.toArray:_*).
-    from(hash(key)).headOption.orElse(ring.headOption).map(_._2)
+  override def findBy(key: String): Option[Node] = {
+    ring = list.asInstanceOf[SortedMap[String, Node]]
+    ring.from(hash(key)).headOption.orElse(ring.headOption).map(_._2)
+  }
 
   protected def hash(input: String): String = 
     Hashing.sipHash24.hashString(input, Charset.forName("UTF-8")).toString
