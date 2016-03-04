@@ -15,7 +15,7 @@
   // post a node to zookeeper with 2 replicas
   hashing.post(Node(port = 1000, replicas = 2)) 
   // list mapping in zookeeper
-  hashing.list
+  val mapping = hashing.list
   // find mapped node 
   val node = hashing.findBy("smith")
   ``` 

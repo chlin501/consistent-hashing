@@ -18,7 +18,6 @@
 package hash
 
 import com.google.common.hash.Funnel
-import com.google.common.hash.Hashing
 import com.google.common.hash.PrimitiveSink
 import hash.util.Curator
 import hash.util.ZooKeeper
@@ -35,6 +34,12 @@ import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import scala.collection.immutable.SortedMap
 import scala.collection.immutable.TreeMap
+
+trait Hashable {
+
+  def hash(): String
+
+}
 
 object Node {
 
@@ -64,10 +69,12 @@ final case class Node(host: String = "localhost", port: Int = 1234,
                       replicas: Int = 100) {
 
   def toMap(): Map[String, Node] = (for(idx <- 1 to replicas) yield {
-    (Hashing.sipHash24.hashObject(this, new Funnel[Node]() {
-      override def funnel(from: Node, into: PrimitiveSink) =  
-        into.putUnencodedChars(from.host).putInt(from.port).putInt(idx)
-    }).toString -> this)
+    (com.google.common.hash.Hashing.sipHash24.hashObject(this, 
+      new Funnel[Node]() {
+        override def funnel(from: Node, into: PrimitiveSink) =  
+          into.putUnencodedChars(from.host).putInt(from.port).putInt(idx)
+      }
+    ).toString -> this)
   }).toMap[String, Node]
 
 }
@@ -78,7 +85,7 @@ trait ConsistentHashing {
 
   def list: Map[String, Node]
 
-  def findBy(key: String): Option[Node]
+  def findBy(h: Hashable): Option[Node]
 
 }
 
@@ -138,12 +145,9 @@ protected[hash] class DefaultConsistentHashing(rootPath: String,
     ring
   }
 
-  override def findBy(key: String): Option[Node] = {
+  override def findBy(h: Hashable): Option[Node] = {
     ring = list.asInstanceOf[SortedMap[String, Node]]
-    ring.from(hash(key)).headOption.orElse(ring.headOption).map(_._2)
+    ring.from(h.hash).headOption.orElse(ring.headOption).map(_._2)
   }
-
-  protected def hash(input: String): String = 
-    Hashing.sipHash24.hashString(input, Charset.forName("UTF-8")).toString
 
 }

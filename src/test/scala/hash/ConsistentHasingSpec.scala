@@ -17,6 +17,7 @@
  */
 package hash
 
+import java.nio.charset.Charset
 import org.apache.curator.test.TestingServer
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.FlatSpec
@@ -25,13 +26,15 @@ import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import hash.util.ZooKeeper
 
-class ConsistentHashingSpec extends FlatSpec 
-                               with Matchers 
-                               with BeforeAndAfterAll {
+class ConsistentHashingSpec extends FlatSpec with Matchers with BeforeAndAfterAll {
 
   val log = LoggerFactory.getLogger(classOf[ConsistentHashingSpec])
 
   var zookeeper: Option[TestingServer] = None
+
+  val nodeA = Node(port = 1000, replicas = 2)
+  val nodeB = Node(port = 2000, replicas = 2)
+  val nodeC = Node(port = 3000, replicas = 2)
 
   override def beforeAll { zookeeper match {
     case Some(zk) =>
@@ -39,21 +42,15 @@ class ConsistentHashingSpec extends FlatSpec
   }}
 
   "consistent hashing" should "post nodes to zookeeper" in {
-    val p = zookeeper.map { zk => zk.getPort }.getOrElse(2181)
-    val hashing = ConsistentHashing.create(ZooKeeper(port = p))
-    val map = hashing.post (
-      Node(port = 1000, replicas = 2), 
-      Node(port = 2000, replicas = 2),
-      Node(port = 3000, replicas = 2)
-    ).list
+    val map = ConsistentHashing.create(ZooKeeper(port = getPort)).
+                      post(nodeA, nodeB, nodeC).list
     log.info("map in zookeeper "+map)
     assert(6 == map.size)
   }
 
   "consistent hashing" should "detect node created" in {
-    val p = zookeeper.map { zk => zk.getPort }.getOrElse(2181)
-    val hashing1 = ConsistentHashing.create("/ring1", ZooKeeper(port = p))
-    val hashing2 = ConsistentHashing.create("/ring1", ZooKeeper(port = p))
+    val hashing1 = ConsistentHashing.create("/ring1", ZooKeeper(port = getPort))
+    val hashing2 = ConsistentHashing.create("/ring1", ZooKeeper(port = getPort))
     val map1 = hashing1.post(Node(port = 1000, replicas = 2)).list
     log.info("initialize post (hashing1): "+map1)
     assert(2 == map1.size)
@@ -64,6 +61,44 @@ class ConsistentHashingSpec extends FlatSpec
     log.info("hashing1 map (altered): "+altered)
     assert(4 == altered.size)
   }
+
+  "consistent hashing" should "assign object to node" in {
+    val hashing = ConsistentHashing.create(ZooKeeper(port = getPort)).
+                          post(nodeA, nodeB, nodeC)
+    val node1 = hashing.findBy(new Hashable() {
+      override def hash(): String = toHash("john")
+    })
+    log.info("john is assigned to "+node1)
+    assert(Option(nodeA).equals(node1))
+    val node2 = hashing.findBy(new Hashable() {
+      override def hash(): String = toHash("smith")
+    })
+    log.info("smith is assigned to "+node2)
+    assert(Option(nodeB).equals(node2))
+    val node3 = hashing.findBy(new Hashable() {
+      override def hash(): String = toHash("brown")
+    })
+    log.info("brown is assigned to "+node3)
+    assert(Option(nodeC).equals(node3))
+    val node4 = hashing.findBy(new Hashable() {
+      override def hash(): String = toHash("zoe")
+    })
+    log.info("zoe is assigned to "+node4)
+    assert(Option(nodeA).equals(node4))
+    val node5 = hashing.findBy(new Hashable() {
+      override def hash(): String = toHash("adam")
+    })
+    log.info("adam is assigned to "+node5)
+    assert(Option(nodeB).equals(node5))
+  }
+
+  private def toHash(input: String): String = com.google.common.hash.Hashing.
+    sipHash24.hashString(input, Charset.forName("UTF-8")).toString
+
+  private def getPort(): Int = zookeeper.map { zk => 
+    zk.getPort 
+  }.getOrElse(2181)
+
 
   override def afterAll { zookeeper match {
     case Some(zk) => zk.close
